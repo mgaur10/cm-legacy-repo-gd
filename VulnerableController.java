@@ -4,60 +4,77 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.web.util.HtmlUtils;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.Statement;
 import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
 public class VulnerableController {
 
-    // 1. Hardcoded Secrets (SAST)
-    private static final String AWS_SECRET_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-    private static final String DB_PASSWORD = "plaintext_mysql_password_root_123";
+    // 1. Hardcoded Secrets Remediation: Retrieve secrets from environment variables or a secure configuration manager
+    private static final String AWS_SECRET_KEY = System.getenv("AWS_SECRET_KEY");
+    private static final String DB_PASSWORD = System.getenv("DB_PASSWORD");
 
-    // 2. SQL Injection (SAST)
+    // Mock catalog for secure price lookup
+    private static final Map<String, Double> ITEM_CATALOG = Map.of(
+        "item_1", 19.99,
+        "item_2", 49.99,
+        "item_3", 5.00
+    );
+
+    // 2. SQL Injection Remediation: Use PreparedStatement with parameterized queries
     @PostMapping("/login")
     public ResponseEntity<String> login(@RequestBody Map<String, String> payload) {
         String username = payload.get("username");
         String password = payload.get("password");
         
-        try {
-            Connection conn = DriverManager.getConnection("jdbc:h2:mem:testdb", "sa", "");
-            Statement stmt = conn.createStatement();
+        String query = "SELECT username FROM users WHERE username = ? AND password = ?";
+        
+        try (Connection conn = DriverManager.getConnection("jdbc:h2:mem:testdb", "sa", "");
+             PreparedStatement stmt = conn.prepareStatement(query)) {
             
-            // VULNERABLE SQL Injection: Query built using raw string concatenation
-            String query = "SELECT * FROM users WHERE username = '" + username + "' AND password = '" + password + "'";
-            ResultSet rs = stmt.executeQuery(query);
+            stmt.setString(1, username);
+            stmt.setString(2, password);
             
-            if (rs.next()) {
-                return ResponseEntity.ok("Welcome back " + rs.getString("username"));
-            } else {
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid credentials");
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return ResponseEntity.ok("Welcome back " + rs.getString("username"));
+                } else {
+                    return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid credentials");
+                }
             }
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Database error: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Database error occurred.");
         }
     }
 
-    // 3. Reflected Cross-Site Scripting (XSS) (SAST)
+    // 3. Reflected Cross-Site Scripting (XSS) Remediation: HTML-escape user input before rendering
     @GetMapping(value = "/receipt", produces = MediaType.TEXT_HTML_VALUE)
     @ResponseBody
     public String receipt(@RequestParam(value = "customer_name", defaultValue = "Valued Customer") String customerName) {
-        // VULNERABLE Reflected XSS: Returning user inputs directly inside unescaped HTML response
-        return "<html><body><h1>Thank you for your order, " + customerName + "!</h1></body></html>";
+        String safeCustomerName = HtmlUtils.htmlEscape(customerName);
+        return "<html><body><h1>Thank you for your order, " + safeCustomerName + "!</h1></body></html>";
     }
 
-    // 4. Business Logic Flaw: Client-Side Price Trust (E-Commerce)
+    // 4. Business Logic Flaw Remediation: Fetch product price from server-side catalog instead of trusting client payload
     @PostMapping("/checkout")
     public ResponseEntity<String> checkout(@RequestBody Map<String, Object> payload) {
         String itemId = (String) payload.get("item_id");
         int quantity = (Integer) payload.get("quantity");
         
-        // VULNERABLE: Reading product price directly from user cart payload instead of database catalog!
-        double price = (Double) payload.get("price");
+        Double price = ITEM_CATALOG.get(itemId);
+        if (price == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Invalid item ID");
+        }
         
         double totalBilled = price * quantity;
         
@@ -67,18 +84,32 @@ public class VulnerableController {
         return ResponseEntity.ok(responseMessage);
     }
 
-    // 5. Path Traversal / Arbitrary File Read (SAST)
+    // 5. Path Traversal Remediation: Validate and normalize the file path to ensure it remains within the target directory
     @GetMapping("/download")
     public ResponseEntity<byte[]> download(@RequestParam("file") String filename) {
         try {
-            // VULNERABLE Path Traversal: direct string concatenation without checks
-            java.io.File file = new java.io.File("/var/reports/" + filename);
-            byte[] fileBytes = java.nio.file.Files.readAllBytes(file.toPath());
+            if (filename == null || filename.contains("..") || filename.contains("/") || filename.contains("\\")) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(null);
+            }
+            
+            Path baseDir = Paths.get("/var/reports").toAbsolutePath().normalize();
+            Path filePath = baseDir.resolve(filename).toAbsolutePath().normalize();
+            
+            if (!filePath.startsWith(baseDir)) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body(null);
+            }
+            
+            File file = filePath.toFile();
+            if (!file.exists() || !file.isFile()) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            }
+            
+            byte[] fileBytes = Files.readAllBytes(filePath);
             return ResponseEntity.ok()
                     .contentType(MediaType.APPLICATION_OCTET_STREAM)
                     .body(fileBytes);
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
     }
 }
