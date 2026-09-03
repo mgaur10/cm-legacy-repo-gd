@@ -18,10 +18,10 @@ db.serialize(() => {
 // 2. SQL Injection (SAST)
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
-    // VULNERABLE SQL Injection: Dynamic SQL query string builder
-    const query = `SELECT * FROM users WHERE username = '${username}' AND password = '${password}'`;
+    // Remediation: Use parameterized queries (prepared statements) instead of string interpolation
+    const query = `SELECT * FROM users WHERE username = ? AND password = ?`;
     
-    db.get(query, [], (err, row) => {
+    db.get(query, [username, password], (err, row) => {
         if (err) {
             return res.status(500).json({ error: err.message });
         }
