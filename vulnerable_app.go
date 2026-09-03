@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// 1. Hardcoded Secrets (SAST)
-const SlackToken = "xoxb-1234567890-123456789012-abc123xyz456"
-const DBPassword = "database_root_plaintext_pass_999!"
+// 1. Hardcoded Secrets (SAST) - Remediated: Retrieve from environment variables
+var SlackToken = os.Getenv("SLACK_TOKEN")
+var DBPassword = os.Getenv("DB_PASSWORD")
 
 type UserProfile struct {
 	UserID   int    `json:"user_id"`
@@ -40,7 +42,7 @@ func initDB() {
 	db.Exec("INSERT INTO invoices (uuid, amount, customer) VALUES ('fec63596-391e-45d4-bf77-7e40c12c3b7a', 1500.0, 'buyer')")
 }
 
-// 2. SQL Injection (SAST)
+// 2. SQL Injection (SAST) - Remediated: Use parameterized query
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		return
@@ -48,9 +50,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 
-	// VULNERABLE SQL Injection: Direct string interpolation into raw query
-	query := fmt.Sprintf("SELECT * FROM users WHERE username = '%s' AND password = '%s'", username, password)
-	rows, err := db.Query(query)
+	rows, err := db.Query("SELECT id FROM users WHERE username = ? AND password = ?", username, password)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -89,8 +89,7 @@ func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// VULNERABLE IDOR: Trusts the user_id inside JSON body without auth validation
 	// VULNERABLE Mass Assignment: updates is_admin directly from input struct properties
-	query := fmt.Sprintf("UPDATE users SET email=$1, full_name=$2, is_admin=$3 WHERE id=%d", profile.UserID)
-	_, err = db.Exec(query, profile.Email, profile.FullName, profile.IsAdmin)
+	_, err = db.Exec("UPDATE users SET email=?, full_name=?, is_admin=? WHERE id=?", profile.Email, profile.FullName, profile.IsAdmin, profile.UserID)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
@@ -109,8 +108,7 @@ func viewInvoiceHandler(w http.ResponseWriter, r *http.Request) {
 	
 	// VULNERABLE IDOR: Trusts user-provided UUID directly to fetch database records
 	// without checking if the authenticated session user owns this specific invoice.
-	query := fmt.Sprintf("SELECT uuid, amount, customer FROM invoices WHERE uuid = '%s'", invoiceUUID)
-	row := db.QueryRow(query)
+	row := db.QueryRow("SELECT uuid, amount, customer FROM invoices WHERE uuid = ?", invoiceUUID)
 	
 	var inv Invoice
 	err := row.Scan(&inv.UUID, &inv.Amount, &inv.Customer)
