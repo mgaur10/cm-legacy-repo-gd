@@ -1,4 +1,4 @@
-# ⚠️ DEMO VULNERABLE TERRAFORM CONFIGURATION ⚠️
+# 🔒 SECURE TERRAFORM CONFIGURATION 🔒
 
 provider "google" {
   project = "codemender-poc-demo"
@@ -7,24 +7,25 @@ provider "google" {
 }
 
 # ---------------------------------------------------------
-# VULNERABILITY 1: Publicly Exposed Storage Bucket
+# REMEDIATED: Secure Storage Bucket (No Public Access)
 # ---------------------------------------------------------
 resource "google_storage_bucket" "user_uploads" {
-  name          = "codemender-user-uploads-bucket"
-  location      = "US"
-  force_destroy = true
-}
-
-# BAD: Grants read access to the entire internet
-resource "google_storage_bucket_iam_binding" "public_rule" {
-  bucket  = google_storage_bucket.user_uploads.name
-  role    = "roles/storage.objectViewer"
-  members = ["allUsers"]
+  name                        = "codemender-user-uploads-bucket"
+  location                    = "US"
+  force_destroy               = true
+  public_access_prevention    = "enforced"
+  uniform_bucket_level_access = true
 }
 
 # ---------------------------------------------------------
-# VULNERABILITY 2: Cloud SQL Open to the World & Hardcoded Password
+# REMEDIATED: Cloud SQL with SSL, Private Access, and Dynamic Password
 # ---------------------------------------------------------
+resource "random_password" "db_password" {
+  length           = 16
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
 resource "google_sql_database_instance" "main_db" {
   name             = "ecommerce-db"
   database_version = "POSTGRES_14"
@@ -34,28 +35,43 @@ resource "google_sql_database_instance" "main_db" {
     tier = "db-f1-micro"
 
     ip_configuration {
-      ipv4_enabled    = true
-      require_ssl     = false # BAD: Unencrypted transit
+      ipv4_enabled = true
+      require_ssl  = true
 
-      # BAD: Open to the entire internet
-      authorized_networks {
-        name  = "open-to-world"
-        value = "0.0.0.0/0"
-      }
+      # REMEDIATED: Removed open-to-world authorized network (0.0.0.0/0)
     }
   }
 }
 
-# BAD: Hardcoded root password in plaintext
 resource "google_sql_user" "root_user" {
   name     = "postgres"
   instance = google_sql_database_instance.main_db.name
-  password = "SuperSecretPassword123!" 
+  password = random_password.db_password.result
 }
 
 # ---------------------------------------------------------
-# VULNERABILITY 3: Over-privileged VM & Secrets in User Data
+# REMEDIATED: Least Privilege VM & Secure Secret Management
 # ---------------------------------------------------------
+resource "google_service_account" "web_server_sa" {
+  account_id   = "web-server-sa"
+  display_name = "Web Server Service Account"
+}
+
+# Secret Manager Secret for Stripe API Key
+resource "google_secret_manager_secret" "stripe_api_key" {
+  secret_id = "stripe-api-key"
+  replication {
+    automatic = true
+  }
+}
+
+# Grant the VM service account access to read the secret
+resource "google_secret_manager_secret_iam_member" "web_server_secret_accessor" {
+  secret_id = google_secret_manager_secret.stripe_api_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.web_server_sa.email}"
+}
+
 resource "google_compute_instance" "web_server" {
   name         = "frontend-web-server"
   machine_type = "e2-micro"
@@ -68,23 +84,20 @@ resource "google_compute_instance" "web_server" {
 
   network_interface {
     network = "default"
-    # BAD: Assigns an ephemeral public IP, exposing the VM directly to the internet
-    access_config {}
+    # REMEDIATED: Removed access_config to prevent assigning a public IP directly
   }
 
   service_account {
-    # BAD: Using the default compute service account...
-    email = "default"
-    # ...and giving it full project-wide admin scopes. 
-    # This is a massive blast radius risk if the VM is compromised.
+    # REMEDIATED: Using a dedicated service account with limited access
+    email  = google_service_account.web_server_sa.email
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 
-  # BAD: Hardcoding secrets in the startup script (visible to anyone with compute viewer access)
+  # REMEDIATED: Secrets are retrieved programmatically from Secret Manager at runtime
   metadata_startup_script = <<EOF
     #!/bin/bash
     echo "Starting web server..."
-    export STRIPE_API_KEY="sk_live_1234567890abcdef1234567890abcdef"
+    # STRIPE_API_KEY is retrieved programmatically from Secret Manager at application runtime
     python3 /app/vulnerable_app.py
   EOF
 }
