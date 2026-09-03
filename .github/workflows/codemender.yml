@@ -1,0 +1,48 @@
+# CodeMender Autonomous Security Agent Workflow
+name: CodeMender Agent Integration
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  codemender-security-gate:
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+        (startsWith(github.event.comment.body, '/verify') ||
+         startsWith(github.event.comment.body, 'verify') ||
+         startsWith(github.event.comment.body, '/fix') ||
+         startsWith(github.event.comment.body, 'fix') ||
+         startsWith(github.event.comment.body, '/remediate') ||
+         startsWith(github.event.comment.body, 'remediate') ||
+         startsWith(github.event.comment.body, '/approve') ||
+         startsWith(github.event.comment.body, 'approve') ||
+         startsWith(github.event.comment.body, '/dismiss') ||
+         startsWith(github.event.comment.body, 'dismiss')))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to Google Cloud (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: 'id_token'
+          workload_identity_provider: 'projects/135215686309/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'codemender-trigger@codemender-gitops-2034.iam.gserviceaccount.com'
+          id_token_audience: 'https://codemender-webhook-ftnshk7mvq-uc.a.run.app'
+          id_token_include_email: true
+
+      - name: Dispatch Scan / Slash Command to CodeMender
+        run: |
+          curl -i -X POST "https://codemender-webhook-ftnshk7mvq-uc.a.run.app/github-webhook" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.id_token }}" \
+            -H "X-CodeMender-Auth: WIF" \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: ${{ github.event_name }}" \
+            -d @$GITHUB_EVENT_PATH
