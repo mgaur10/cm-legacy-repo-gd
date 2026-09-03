@@ -1,5 +1,7 @@
 from flask import Flask, request, jsonify, render_template_string
 import sqlite3
+import subprocess
+import re
 
 app = Flask(__name__)
 
@@ -30,10 +32,10 @@ def login():
     password = data.get('password')
     
     conn = get_db_connection()
-    # VULNERABLE: Direct string interpolation of user inputs into SQL query
-    query = f"SELECT * FROM users WHERE username = '{username}' AND password = '{password}'"
+    # FIXED: Use parameterized queries to safely separate data from code
+    query = "SELECT * FROM users WHERE username = ? AND password = ?"
     cursor = conn.cursor()
-    cursor.execute(query)
+    cursor.execute(query, (username, password))
     user = cursor.fetchone()
     conn.close()
     
@@ -131,9 +133,16 @@ def update_profile():
 @app.route('/ping', methods=['GET'])
 def ping():
     host = request.args.get('host', '8.8.8.8')
-    # VULNERABLE RCE: User-controlled input passed directly to system shell execution
-    command = f"ping -c 1 {host}"
-    response = os.popen(command).read()
+    # FIXED: Validate input against a strict whitelist and use subprocess with shell=False
+    if not re.match(r"^[a-zA-Z0-9.-]+$", host) or host.startswith('-'):
+        return jsonify({"status": "failed", "error": "Invalid host format"}), 400
+    
+    try:
+        result = subprocess.run(["ping", "-c", "1", host], capture_output=True, text=True, timeout=5)
+        response = result.stdout + result.stderr
+    except Exception as e:
+        response = str(e)
+        
     return jsonify({"status": "completed", "output": response})
 
 if __name__ == '__main__':
